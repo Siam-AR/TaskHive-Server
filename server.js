@@ -174,3 +174,52 @@ const verifyRole = (allowedRoles) => {
 const verifyClient = verifyRole([ROLES.CLIENT]);
 const verifyFreelancer = verifyRole([ROLES.FREELANCER]);
 const verifyAdmin = verifyRole([ROLES.ADMIN]);
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", CLIENT_URL);
+  res.header("Access-Control-Allow-Credentials", "true");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
+app.get("/", (req, res) => {
+  res.send("TaskHive API Server is running successfully");
+});
+
+app.get("/api/health", (req, res) => {
+  res.status(200).json({ success: true, message: "TaskHive server is healthy" });
+});
+
+app.get("/api/roles", (req, res) => {
+  res.status(200).json({
+    success: true,
+    roles: ["Client", "Freelancer", "Admin"],
+  });
+});
+
+app.get("/api/auth/me", verifyToken, (req, res) => {
+  res.status(200).json({ success: true, user: req.user });
+});
+
+app.get("/api/protected/client", verifyToken, verifyClient, (req, res) => {
+  res.status(200).json({ success: true, message: "Client access granted", user: req.user });
+});
+
+app.get("/api/protected/freelancer", verifyToken, verifyFreelancer, (req, res) => {
+  res.status(200).json({ success: true, message: "Freelancer access granted", user: req.user });
+});
+
+app.get("/api/protected/admin", verifyToken, verifyAdmin, (req, res) => {
+  res.status(200).json({ success: true, message: "Admin access granted", user: req.user });
+});
+
