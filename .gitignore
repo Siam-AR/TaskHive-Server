@@ -33,6 +33,15 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# local debug / inspection scripts
+/debug-request.js
+/debug-tasks.js
+/inspect-tasks.js
+/probe-mongo.js
+/verify-tasks.js
+/scripts/inspect-db-tasks.js
+/scripts/print-tasks.js
+
 # vercel
 .vercel
 

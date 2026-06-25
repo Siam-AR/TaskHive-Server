@@ -419,4 +419,175 @@ if (process.env.NODE_ENV !== "production") {
   });
 }
 
+const normalizeRole = (role) => {
+  const value = String(role || "").trim().toLowerCase();
+
+  if (value === "admin") {
+    return ROLES.ADMIN;
+  }
+
+  if (value === "freelancer") {
+    return ROLES.FREELANCER;
+  }
+
+  return ROLES.CLIENT;
+};
+
+const getTrustedUserFromHeaders = (req) => {
+  const userId = req?.headers?.["x-user-id"] || req?.headers?.["X-User-Id"] || "";
+  const email = req?.headers?.["x-user-email"] || req?.headers?.["X-User-Email"] || "";
+  const role = req?.headers?.["x-user-role"] || req?.headers?.["X-User-Role"] || "";
+
+  if (!userId && !email && !role) {
+    return null;
+  }
+
+  return {
+    id: String(userId || email || "guest"),
+    email: String(email || ""),
+    name: String(email || "Authenticated user"),
+    role: normalizeRole(role),
+  };
+};
+
+const extractAuthToken = (req) => {
+  const signedCookies = req?.signedCookies || {};
+  const cookies = req?.cookies || {};
+  const header = req?.headers?.cookie || "";
+  const authHeader = req?.headers?.authorization || "";
+  const [scheme, hdrToken] = authHeader.split(" ");
+
+  if (scheme === "Bearer" && hdrToken) {
+    return hdrToken.trim();
+  }
+
+  const parsedCookies = Object.fromEntries(
+    header
+      .split(";")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const separatorIndex = entry.indexOf("=");
+        if (separatorIndex === -1) {
+          return [entry, ""];
+        }
+
+        const key = entry.slice(0, separatorIndex).trim();
+        const value = decodeURIComponent(entry.slice(separatorIndex + 1).trim());
+        return [key, value];
+      })
+  );
+
+  const candidateNames = [
+    "better-auth.session_token",
+    "better-auth.session-token",
+    "better_auth_session",
+    "better-auth-session",
+    "skillswap_session",
+    "session_token",
+    "session",
+    "token",
+  ];
+
+  for (const name of candidateNames) {
+    const value = signedCookies[name] || cookies[name] || parsedCookies[name];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return null;
+};
+
+const verifyToken = async (req, res, next) => {
+  try {
+    const trustedUser = getTrustedUserFromHeaders(req);
+    if (trustedUser) {
+      req.user = trustedUser;
+      return next();
+    }
+
+    await initDatabase();
+
+    if (!usersCollection || !sessionCollection) {
+      return res.status(503).json({ success: false, message: "Authentication service unavailable" });
+    }
+
+    let token = extractAuthToken(req);
+
+    if (!token) {
+      const authHeader = req.headers.authorization || "";
+      const [scheme, hdrToken] = authHeader.split(" ");
+      if (scheme === "Bearer" && hdrToken) {
+        token = hdrToken;
+      }
+    }
+
+    let session = null;
+    if (token) {
+      session = await sessionCollection.findOne({ token });
+    }
+
+    if (!session) {
+      const cookies = req.cookies || {};
+      for (const v of Object.values(cookies)) {
+        if (typeof v !== "string") continue;
+        const trimmed = v.trim();
+        if (!trimmed) continue;
+        const s = await sessionCollection.findOne({ token: trimmed });
+        if (s) {
+          session = s;
+          token = trimmed;
+          break;
+        }
+      }
+    }
+
+    if (!session?.userId) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    const userId = String(session.userId);
+    const userFilter = ObjectId.isValid(userId)
+      ? { $or: [{ _id: new ObjectId(userId) }, { _id: userId }] }
+      : { _id: userId };
+
+    const user = await usersCollection.findOne(userFilter);
+
+    if (!user) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    req.user = {
+      id: String(user._id),
+      email: user.email,
+      name: user.name,
+      role: normalizeRole(user.role),
+    };
+
+    next();
+  } catch (error) {
+    console.error("Token verification failed:", error.message);
+    res.status(500).json({ success: false, message: "Authentication failed" });
+  }
+};
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin || "";
+  const isAllowedOrigin = origin && ALLOWED_ORIGINS.includes(origin);
+  const responseOrigin = isAllowedOrigin ? origin : CLIENT_URL;
+
+  res.header("Access-Control-Allow-Origin", responseOrigin);
+  res.header("Access-Control-Allow-Credentials", "true");
+  res.header("Vary", "Origin");
+  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-User-Id, X-User-Email, X-User-Role");
+  res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
+
 module.exports = app;
