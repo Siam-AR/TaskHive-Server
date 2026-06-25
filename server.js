@@ -750,4 +750,71 @@ app.get("/api/tasks", async (req, res) => {
   }
 });
 
+app.get("/api/proposals/check/:taskId", verifyToken, verifyFreelancer, async (req, res) => {
+  try {
+    const taskId = req.params.taskId;
+
+    if (proposalsCollection) {
+      const existingProposal = await proposalsCollection.findOne({
+        taskId,
+        freelancerId: req.user.id,
+      });
+
+      return res.status(200).json({ success: true, hasSubmitted: Boolean(existingProposal) });
+    }
+
+    return res.status(200).json({ success: true, hasSubmitted: false });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Failed to check proposal status" });
+  }
+});
+
+app.post("/api/proposals", verifyToken, verifyFreelancer, async (req, res) => {
+  try {
+    await initDatabase();
+    const payload = req.body || {};
+    const taskId = payload.taskId;
+
+    if (!taskId) {
+      return res.status(400).json({ success: false, message: "Invalid taskId" });
+    }
+
+    if (!proposalsCollection || !tasksCollection) {
+      return res.status(503).json({ success: false, message: "Task service unavailable" });
+    }
+
+    const taskQuery = buildTaskLookupQuery(taskId);
+    const task = await tasksCollection.findOne(taskQuery);
+
+    if (!task) {
+      return res.status(404).json({ success: false, message: "Task not found" });
+    }
+
+    const existingProposal = await proposalsCollection.findOne({
+      taskId: task._id.toString(),
+      freelancerId: req.user.id,
+    });
+
+    if (existingProposal) {
+      return res.status(409).json({ success: false, message: "You already submitted a proposal for this task" });
+    }
+
+    const proposal = {
+      taskId: task._id.toString(),
+      coverLetter: payload.coverLetter,
+      expectedAmount: payload.expectedAmount,
+      status: "pending",
+      freelancerId: req.user.id,
+      freelancerEmail: req.user.email,
+      createdAt: new Date(),
+    };
+
+    const result = await proposalsCollection.insertOne(proposal);
+    return res.status(201).json({ success: true, insertedId: result.insertedId });
+  } catch (error) {
+    console.error("Proposal submission failed:", error);
+    res.status(500).json({ success: false, message: error?.message || "Failed to submit proposal" });
+  }
+});
+
 module.exports = app;
