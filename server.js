@@ -590,4 +590,164 @@ app.use((req, res, next) => {
   next();
 });
 
+const escapeRegex = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const normalizeTaskDocument = (task) => {
+  if (!task || typeof task !== "object") {
+    return null;
+  }
+
+  const idValue = task._id ?? task.id ?? task.taskId ?? null;
+  const clientEmail = task.clientEmail || task.client_email || task.client?.email || task.clientEmail || null;
+  const clientName = task.clientName || task.client_name || task.client?.name || task.clientName || null;
+  const category = task.category || task.type || "General";
+  const budget = Number(task.budget ?? task.amount ?? 0);
+  const status = String(task.status || "open").trim().toLowerCase();
+
+  return {
+    ...task,
+    _id: idValue ? String(idValue) : "",
+    id: idValue ? String(idValue) : "",
+    title: task.title || task.name || "Untitled task",
+    description: task.description || task.summary || "",
+    category,
+    budget,
+    status,
+    deadline: task.deadline || task.dueDate || null,
+    clientEmail,
+    clientName,
+    client: {
+      name: clientName || clientEmail || "Unknown client",
+      email: clientEmail || null,
+    },
+  };
+};
+
+const toObjectId = (value) => {
+  if (!value || typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed || !ObjectId.isValid(trimmed)) {
+    return null;
+  }
+
+  return new ObjectId(trimmed);
+};
+
+const buildTaskLookupQuery = (taskId) => {
+  const normalizedTaskId = String(taskId || "").trim();
+  const orFilters = [];
+  const objectId = toObjectId(normalizedTaskId);
+
+  if (objectId) {
+    orFilters.push({ _id: objectId });
+  }
+
+  if (normalizedTaskId) {
+    orFilters.push({ _id: normalizedTaskId });
+    orFilters.push({ taskId: normalizedTaskId });
+    orFilters.push({ id: normalizedTaskId });
+  }
+
+  return orFilters.length ? { $or: orFilters } : { _id: null };
+};
+
+app.get("/api/tasks/:taskId", async (req, res) => {
+  try {
+    await initDatabase();
+
+    if (!tasksCollection) {
+      return res.status(503).json({ success: false, message: "Task service unavailable" });
+    }
+
+    const taskId = req.params.taskId;
+    const taskQuery = buildTaskLookupQuery(taskId);
+    const task = await tasksCollection.findOne(taskQuery);
+
+    if (!task) {
+      return res.status(404).json({ success: false, message: "Task not found" });
+    }
+
+    return res.status(200).json({ success: true, data: normalizeTaskDocument(task) });
+  } catch (error) {
+    console.error("Failed to load task details:", error.stack || error);
+    res.status(500).json({ success: false, message: "Failed to load task details", error: error.message });
+  }
+});
+
+app.get("/api/tasks", async (req, res) => {
+  try {
+    await initDatabase();
+
+    if (!tasksCollection) {
+      return res.status(503).json({ success: false, message: "Task service unavailable" });
+    }
+
+    const page = Math.max(1, Number.parseInt(req.query.page || "1", 10) || 1);
+    const limit = Math.min(9, Math.max(1, Number.parseInt(req.query.limit || "9", 10) || 9));
+    const search = typeof req.query.search === "string" ? req.query.search.trim().toLowerCase() : "";
+    const category = typeof req.query.category === "string" ? req.query.category.trim() : "";
+    const requestedStatus = typeof req.query.status === "string" ? req.query.status.trim().toLowerCase() : "";
+    const effectiveStatus = requestedStatus && requestedStatus !== "all" ? requestedStatus : "open";
+
+    const query = {};
+    const filters = [];
+
+    if (effectiveStatus) {
+      filters.push({ status: { $regex: `^${escapeRegex(effectiveStatus)}$`, $options: "i" } });
+    }
+
+    if (search) {
+      filters.push({ title: { $regex: escapeRegex(search), $options: "i" } });
+    }
+
+    if (category) {
+      filters.push({ category: { $regex: `^${escapeRegex(category)}$`, $options: "i" } });
+    }
+
+    if (filters.length === 1) {
+      Object.assign(query, filters[0]);
+    } else if (filters.length > 1) {
+      query.$and = filters;
+    }
+
+    const totalTasks = await tasksCollection.countDocuments(query);
+    const totalPages = Math.max(1, Math.ceil(totalTasks / limit));
+    const currentPage = Math.min(page, totalPages);
+    const skip = (currentPage - 1) * limit;
+    const docs = await tasksCollection
+      .find(query)
+      .sort({ createdAt: -1, _id: -1 })
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+
+    const data = docs.map(normalizeTaskDocument).filter(Boolean);
+    const categoryPipeline = [
+      { $match: { status: { $regex: "^open$", $options: "i" } } },
+      { $group: { _id: "$category" } },
+      { $project: { _id: 0, category: "$_id" } },
+    ];
+    const categoryDocs = await tasksCollection.aggregate(categoryPipeline).toArray();
+    const categories = categoryDocs.map((item) => item.category).filter(Boolean).sort();
+
+    res.status(200).json({
+      success: true,
+      data,
+      pagination: {
+        page: currentPage,
+        limit,
+        totalTasks,
+        totalPages,
+      },
+      categories,
+    });
+  } catch (error) {
+    console.error("Failed to load tasks:", error.stack || error);
+    res.status(500).json({ success: false, message: "Failed to load tasks", error: error.message });
+  }
+});
+
 module.exports = app;
