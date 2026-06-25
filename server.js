@@ -817,4 +817,63 @@ app.post("/api/proposals", verifyToken, verifyFreelancer, async (req, res) => {
   }
 });
 
+app.post("/api/transactions", verifyToken, verifyClient, async (req, res) => {
+  try {
+    await initDatabase();
+    const payload = req.body || {};
+    const taskId = toObjectId(payload.taskId);
+
+    if (!taskId) {
+      return res.status(400).json({ success: false, message: "Invalid taskId" });
+    }
+
+    const task = await tasksCollection.findOne({ _id: taskId });
+
+    if (!task || task.clientId !== req.user.id) {
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    }
+
+    const transaction = {
+      taskId: task._id.toString(),
+      proposalId: payload.proposalId,
+      amount: payload.amount,
+      clientId: req.user.id,
+      freelancerId: payload.freelancerId,
+      status: payload.status || "pending",
+      createdAt: new Date(),
+    };
+
+    const result = await transactionsCollection.insertOne(transaction);
+    res.status(201).json({ success: true, insertedId: result.insertedId });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Failed to create transaction" });
+  }
+});
+
+app.get("/api/transactions/my", verifyToken, async (req, res) => {
+  try {
+    await initDatabase();
+    const filter = {};
+
+    if (req.user.role === ROLES.CLIENT) {
+      filter.clientId = req.user.id;
+    } else if (req.user.role === ROLES.FREELANCER) {
+      filter.freelancerId = req.user.id;
+    }
+
+    const transactions = await transactionsCollection.find(filter).sort({ createdAt: -1 }).toArray();
+    res.status(200).json({ success: true, data: transactions });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Failed to load transactions" });
+  }
+});
+
+module.exports = app;
+module.exports.extractAuthToken = extractAuthToken;
+module.exports.normalizeRole = normalizeRole;
+module.exports.buildTaskLookupQuery = buildTaskLookupQuery;
+module.exports.ROLES = ROLES;
+
+
+
 module.exports = app;
