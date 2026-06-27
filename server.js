@@ -289,6 +289,53 @@ const buildTaskLookupQuery = (taskId) => {
   return orFilters.length ? { $or: orFilters } : { _id: null };
 };
 
+const extractTaskIdFromBody = (body) => {
+  if (!body || typeof body !== "object") {
+    return "";
+  }
+
+  return String(body.id || body._id || body.taskId || "").trim();
+};
+
+const handleTaskUpdate = async (taskId, req, res) => {
+  const taskQuery = buildTaskLookupQuery(taskId);
+  const existingTask = await tasksCollection.findOne(taskQuery);
+
+  if (!existingTask) {
+    return res.status(404).json({ success: false, message: "Task not found" });
+  }
+
+  if (String(existingTask.clientId || "") !== String(req.user.id || "")) {
+    return res.status(403).json({ success: false, message: "Forbidden" });
+  }
+
+  const currentStatus = String(existingTask.status || "open").trim().toLowerCase();
+  if (currentStatus !== "open") {
+    return res.status(400).json({ success: false, message: "Only open tasks can be edited." });
+  }
+
+  const payload = req.body || {};
+  const normalizedCategory = String(payload.category || payload.type || payload.taskCategory || payload.selectedCategory || existingTask.category || "Other").trim() || "Other";
+  const normalizedDeadline = String(payload.deadline || payload.dueDate || payload.deadlineDate || existingTask.deadline || "").trim() || null;
+  const normalizedDescription = String(payload.description || payload.summary || existingTask.description || "").trim();
+  const normalizedBudget = Number(payload.budget ?? payload.amount ?? existingTask.budget ?? 0);
+  const normalizedTitle = String(payload.title || existingTask.title || "").trim();
+
+  const updatePayload = {
+    title: normalizedTitle,
+    description: normalizedDescription,
+    category: normalizedCategory,
+    budget: normalizedBudget,
+    deadline: normalizedDeadline,
+    updatedAt: new Date(),
+  };
+
+  await tasksCollection.updateOne(taskQuery, { $set: updatePayload });
+  const updatedTask = await tasksCollection.findOne(taskQuery);
+
+  return res.status(200).json({ success: true, data: normalizeTaskDocument(updatedTask) });
+};
+
 const buildUserLookupQuery = (userId) => {
   const normalizedUserId = String(userId || "").trim();
   const orFilters = [];
@@ -582,45 +629,23 @@ app.get("/api/tasks/my", verifyToken, verifyClient, async (req, res) => {
 app.put("/api/tasks/:taskId", verifyToken, verifyClient, async (req, res) => {
   try {
     await initDatabase();
-    const taskId = req.params.taskId;
-    const taskQuery = buildTaskLookupQuery(taskId);
-    const existingTask = await tasksCollection.findOne(taskQuery);
-
-    if (!existingTask) {
-      return res.status(404).json({ success: false, message: "Task not found" });
-    }
-
-    if (String(existingTask.clientId || "") !== String(req.user.id || "")) {
-      return res.status(403).json({ success: false, message: "Forbidden" });
-    }
-
-    const currentStatus = String(existingTask.status || "open").trim().toLowerCase();
-    if (currentStatus !== "open") {
-      return res.status(400).json({ success: false, message: "Only open tasks can be edited." });
-    }
-
-    const payload = req.body || {};
-    const normalizedCategory = String(payload.category || payload.type || payload.taskCategory || payload.selectedCategory || existingTask.category || "Other").trim() || "Other";
-    const normalizedDeadline = String(payload.deadline || payload.dueDate || payload.deadlineDate || existingTask.deadline || "").trim() || null;
-    const normalizedDescription = String(payload.description || payload.summary || existingTask.description || "").trim();
-    const normalizedBudget = Number(payload.budget ?? payload.amount ?? existingTask.budget ?? 0);
-    const normalizedTitle = String(payload.title || existingTask.title || "").trim();
-
-    const updatePayload = {
-      title: normalizedTitle,
-      description: normalizedDescription,
-      category: normalizedCategory,
-      budget: normalizedBudget,
-      deadline: normalizedDeadline,
-      updatedAt: new Date(),
-    };
-
-    await tasksCollection.updateOne(taskQuery, { $set: updatePayload });
-    const updatedTask = await tasksCollection.findOne(taskQuery);
-
-    return res.status(200).json({ success: true, data: normalizeTaskDocument(updatedTask) });
+    return await handleTaskUpdate(req.params.taskId, req, res);
   } catch (error) {
     console.error("PUT /api/tasks/:taskId failed", error);
+    res.status(500).json({ success: false, message: "Failed to update task" });
+  }
+});
+
+app.put("/api/tasks", verifyToken, verifyClient, async (req, res) => {
+  try {
+    await initDatabase();
+    const taskId = extractTaskIdFromBody(req.body);
+    if (!taskId) {
+      return res.status(400).json({ success: false, message: "Missing taskId in request body" });
+    }
+    return await handleTaskUpdate(taskId, req, res);
+  } catch (error) {
+    console.error("PUT /api/tasks failed", error);
     res.status(500).json({ success: false, message: "Failed to update task" });
   }
 });
