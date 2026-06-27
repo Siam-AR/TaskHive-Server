@@ -311,6 +311,12 @@ const verifyToken = async (req, res, next) => {
   try {
     const trustedUser = getTrustedUserFromHeaders(req);
     if (trustedUser) {
+      console.log("verifyToken trusted headers used", {
+        trustedUser,
+        xUserId: req.headers["x-user-id"],
+        xUserEmail: req.headers["x-user-email"],
+        xUserRole: req.headers["x-user-role"],
+      });
       req.user = trustedUser;
       return next();
     }
@@ -540,6 +546,39 @@ app.get("/api/protected/admin", verifyToken, verifyAdmin, (req, res) => {
   res.status(200).json({ success: true, message: "Admin access granted", user: req.user });
 });
 
+app.get("/api/tasks/my", verifyToken, verifyClient, async (req, res) => {
+  try {
+    await initDatabase();
+    console.log("GET /api/tasks/my req.user", req.user);
+
+    const clientId = String(req.user?.id || "").trim();
+    const clientEmail = String(req.user?.email || "").trim();
+    const filter = {
+      $or: [
+        ...(clientId ? [{ clientId }] : []),
+        ...(clientEmail ? [{ clientEmail }] : []),
+      ],
+    };
+
+    if (!filter.$or.length) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
+    console.log("GET /api/tasks/my filter", filter);
+    const tasks = await tasksCollection
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    console.log("GET /api/tasks/my result count", tasks.length);
+
+    res.status(200).json({ success: true, data: tasks });
+  } catch (error) {
+    console.error("GET /api/tasks/my failed", error);
+    res.status(500).json({ success: false, message: "Failed to load your tasks" });
+  }
+});
+
 app.get("/api/tasks/:taskId", async (req, res) => {
   try {
     await initDatabase();
@@ -679,7 +718,8 @@ app.post("/api/tasks", verifyToken, verifyClient, async (req, res) => {
     const normalizedDescription = String(payload.description || payload.summary || "").trim();
     const normalizedBudget = Number(payload.budget ?? payload.amount ?? 0);
 
-    console.log("Creating task payload", { payload, normalizedCategory, normalizedDeadline });
+    console.log("POST /api/tasks req.user", req.user);
+    console.log("POST /api/tasks payload", { payload, normalizedCategory, normalizedDeadline });
 
     const task = {
       title: payload.title,
@@ -693,24 +733,13 @@ app.post("/api/tasks", verifyToken, verifyClient, async (req, res) => {
       createdAt: new Date(),
     };
 
+    console.log("POST /api/tasks insert task", task);
+
     const result = await tasksCollection.insertOne(task);
     res.status(201).json({ success: true, insertedId: result.insertedId });
   } catch (error) {
+    console.error("POST /api/tasks failed", error);
     res.status(500).json({ success: false, message: "Failed to create task" });
-  }
-});
-
-app.get("/api/tasks/my", verifyToken, verifyClient, async (req, res) => {
-  try {
-    await initDatabase();
-    const tasks = await tasksCollection
-      .find({ clientId: req.user.id })
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    res.status(200).json({ success: true, data: tasks });
-  } catch (error) {
-    res.status(500).json({ success: false, message: "Failed to load your tasks" });
   }
 });
 
