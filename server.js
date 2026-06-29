@@ -33,6 +33,7 @@ let sessionCollection;
 let tasksCollection;
 let proposalsCollection;
 let transactionsCollection;
+let paymentsCollection;
 let reviewsCollection;
 
 const escapeRegex = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -141,6 +142,25 @@ const normalizeFreelancerDocument = (user, stats = null) => {
     rating: reviewStats.rating,
     reviewCount: reviewStats.reviewCount,
     finishedJobs: reviewStats.finishedJobs,
+  };
+};
+
+const normalizeUserDocument = (user) => {
+  if (!user || typeof user !== "object") {
+    return null;
+  }
+
+  const idValue = user._id ?? user.id ?? user.userId ?? null;
+  const name = user.name || user.fullName || user.displayName || user.email || "User";
+
+  return {
+    _id: idValue ? String(idValue) : "",
+    id: idValue ? String(idValue) : "",
+    name,
+    email: String(user.email || "").toLowerCase(),
+    role: normalizeRole(user.role),
+    isBlocked: Boolean(user.isBlocked),
+    createdAt: user.createdAt || null,
   };
 };
 
@@ -285,6 +305,7 @@ const initDatabase = async () => {
     tasksCollection = appDb.collection("tasks");
     proposalsCollection = appDb.collection("proposals");
     transactionsCollection = appDb.collection("transactions");
+    paymentsCollection = appDb.collection("payments");
     reviewsCollection = appDb.collection("reviews");
 
     // Ensure unique constraint to prevent duplicate proposals per freelancer+task
@@ -500,11 +521,16 @@ const verifyToken = async (req, res, next) => {
       return res.status(401).json({ success: false, message: "Unauthorized" });
     }
 
+    if (user.isBlocked) {
+      return res.status(403).json({ success: false, message: "Account blocked" });
+    }
+
     req.user = {
       id: String(user._id),
       email: user.email,
       name: String(user.name || user.fullName || user.displayName || user.email || "").trim(),
       role: normalizeRole(user.role),
+      isBlocked: Boolean(user.isBlocked),
     };
 
     next();
@@ -675,6 +701,112 @@ app.get("/api/protected/freelancer", verifyToken, verifyFreelancer, (req, res) =
 
 app.get("/api/protected/admin", verifyToken, verifyAdmin, (req, res) => {
   res.status(200).json({ success: true, message: "Admin access granted", user: req.user });
+});
+
+app.get("/api/admin/overview", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    await initDatabase();
+
+    if (!usersCollection || !tasksCollection || !paymentsCollection) {
+      return res.status(503).json({ success: false, message: "Admin analytics service unavailable" });
+    }
+
+    const totalUsers = await usersCollection.countDocuments({});
+    const totalTasks = await tasksCollection.countDocuments({});
+    const activeTasks = await tasksCollection.countDocuments({
+      status: {
+        $not: {
+          $regex: "^(complete|completed|paid|cancelled|closed)$",
+          $options: "i",
+        },
+      },
+    });
+
+    const revenuePipeline = [
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: { $ifNull: ["$amount", 0] } },
+        },
+      },
+    ];
+    const revenueResult = await paymentsCollection.aggregate(revenuePipeline).toArray();
+    const totalRevenue = revenueResult[0]?.totalRevenue ?? 0;
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        totalUsers,
+        totalTasks,
+        activeTasks,
+        totalRevenue,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to load admin overview stats:", error.stack || error);
+    return res.status(500).json({ success: false, message: "Failed to load admin overview stats", error: error.message });
+  }
+});
+
+app.get("/api/admin/users", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    await initDatabase();
+
+    if (!usersCollection) {
+      return res.status(503).json({ success: false, message: "User service unavailable" });
+    }
+
+    const users = await usersCollection
+      .find({})
+      .sort({ role: -1, createdAt: -1, _id: -1 })
+      .toArray();
+
+    const data = users.map(normalizeUserDocument).filter(Boolean);
+
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    console.error("Failed to load admin users:", error.stack || error);
+    return res.status(500).json({ success: false, message: "Failed to load admin users", error: error.message });
+  }
+});
+
+app.patch("/api/admin/users/:userId/block", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    await initDatabase();
+
+    if (!usersCollection) {
+      return res.status(503).json({ success: false, message: "User service unavailable" });
+    }
+
+    const userQuery = buildUserLookupQuery(req.params.userId);
+    const existingUser = await usersCollection.findOne(userQuery);
+
+    if (!existingUser) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const currentUserId = String(req.user?.id || "");
+    const targetUserId = String(existingUser._id || existingUser.id || existingUser.userId || "");
+    const targetUserEmail = String(existingUser.email || "").toLowerCase();
+    const currentUserEmail = String(req.user?.email || "").toLowerCase();
+
+    if (currentUserId === targetUserId || (currentUserEmail && currentUserEmail === targetUserEmail)) {
+      return res.status(403).json({ success: false, message: "Admins cannot change their own block status." });
+    }
+
+    const isBlocked = Boolean(req.body?.isBlocked);
+    const updateResult = await usersCollection.updateOne(userQuery, { $set: { isBlocked } });
+
+    if (!updateResult.matchedCount) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const updatedUser = await usersCollection.findOne(userQuery);
+    return res.status(200).json({ success: true, data: normalizeUserDocument(updatedUser) });
+  } catch (error) {
+    console.error("Failed to update user block status:", error.stack || error);
+    return res.status(500).json({ success: false, message: "Failed to update user", error: error.message });
+  }
 });
 
 app.get("/api/tasks/my", verifyToken, verifyClient, async (req, res) => {
