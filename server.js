@@ -999,14 +999,31 @@ app.post("/api/proposals", verifyToken, verifyFreelancer, async (req, res) => {
 app.get("/api/proposals/my", verifyToken, verifyFreelancer, async (req, res) => {
   try {
     await initDatabase();
+
+    const requestedEmail = String(req.query.freelancerEmail || req.query.freelancer_email || "").trim().toLowerCase();
+    const useMineFilter = requestedEmail === "mine" || requestedEmail === "self" || requestedEmail === "me";
+    const freelancerEmail = String(req.user?.email || "").trim().toLowerCase();
+
+    const filter = useMineFilter && freelancerEmail
+      ? {
+          $or: [
+            { freelancerEmail: freelancerEmail },
+            { freelancer_email: freelancerEmail },
+            { freelancerId: req.user.id },
+            { freelancer_id: req.user.id },
+          ],
+        }
+      : {
+          $or: [
+            { freelancerId: req.user.id },
+            { freelancer_id: req.user.id },
+            ...(freelancerEmail ? [{ freelancerEmail: freelancerEmail }, { freelancer_email: freelancerEmail }] : []),
+          ],
+        };
+
     const proposals = await proposalsCollection
-      .find({
-        $or: [
-          { freelancerId: req.user.id },
-          { freelancer_id: req.user.id },
-        ],
-      })
-      .sort({ createdAt: -1 })
+      .find(filter)
+      .sort({ createdAt: -1, submitted_at: -1 })
       .toArray();
 
     const normalized = proposals.map((p) => normalizeProposalDocument(p)).filter(Boolean);
