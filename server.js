@@ -809,6 +809,104 @@ app.patch("/api/admin/users/:userId/block", verifyToken, verifyAdmin, async (req
   }
 });
 
+app.get("/api/admin/tasks", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    await initDatabase();
+
+    if (!tasksCollection) {
+      return res.status(503).json({ success: false, message: "Task service unavailable" });
+    }
+
+    const page = Math.max(1, Number.parseInt(req.query.page || "1", 10) || 1);
+    const limit = Math.min(50, Math.max(1, Number.parseInt(req.query.limit || "20", 10) || 20));
+    const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const category = typeof req.query.category === "string" ? req.query.category.trim() : "";
+    const status = typeof req.query.status === "string" ? req.query.status.trim().toLowerCase() : "";
+
+    const query = {};
+    const filters = [];
+
+    if (status && status !== "all") {
+      filters.push({ status: { $regex: `^${escapeRegex(status)}$`, $options: "i" } });
+    }
+
+    if (search) {
+      filters.push({ title: { $regex: escapeRegex(search), $options: "i" } });
+    }
+
+    if (category) {
+      filters.push({ category: { $regex: `^${escapeRegex(category)}$`, $options: "i" } });
+    }
+
+    if (filters.length === 1) {
+      Object.assign(query, filters[0]);
+    } else if (filters.length > 1) {
+      query.$and = filters;
+    }
+
+    const totalTasks = await tasksCollection.countDocuments(query);
+    const totalPages = Math.max(1, Math.ceil(totalTasks / limit));
+    const currentPage = Math.min(page, totalPages);
+    const skip = (currentPage - 1) * limit;
+
+    const docs = await tasksCollection
+      .find(query)
+      .sort({ createdAt: -1, _id: -1 })
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+
+    const data = docs.map(normalizeTaskDocument).filter(Boolean);
+
+    return res.status(200).json({
+      success: true,
+      data,
+      pagination: {
+        page: currentPage,
+        limit,
+        totalTasks,
+        totalPages,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to load admin tasks:", error.stack || error);
+    return res.status(500).json({ success: false, message: "Failed to load admin tasks", error: error.message });
+  }
+});
+
+app.delete("/api/admin/tasks/:taskId", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    await initDatabase();
+
+    if (!tasksCollection) {
+      return res.status(503).json({ success: false, message: "Task service unavailable" });
+    }
+
+    const taskQuery = buildTaskLookupQuery(req.params.taskId);
+    const task = await tasksCollection.findOne(taskQuery);
+
+    if (!task) {
+      return res.status(404).json({ success: false, message: "Task not found" });
+    }
+
+    await tasksCollection.deleteOne(taskQuery);
+
+    if (proposalsCollection) {
+      await proposalsCollection.deleteMany({
+        $or: [
+          { taskId: req.params.taskId },
+          { task_id: req.params.taskId },
+        ],
+      });
+    }
+
+    return res.status(200).json({ success: true, data: { deletedTaskId: String(task._id) } });
+  } catch (error) {
+    console.error("Failed to delete admin task:", error.stack || error);
+    return res.status(500).json({ success: false, message: "Failed to delete task", error: error.message });
+  }
+});
+
 app.get("/api/tasks/my", verifyToken, verifyClient, async (req, res) => {
   try {
     await initDatabase();
