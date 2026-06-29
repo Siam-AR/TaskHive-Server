@@ -748,6 +748,78 @@ app.get("/api/admin/overview", verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
+app.get("/api/admin/transactions", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    await initDatabase();
+
+    // Prefer a payments collection, fallback to transactions collection
+    const coll = paymentsCollection || transactionsCollection;
+    if (!coll) {
+      return res.status(503).json({ success: false, message: "Transactions service unavailable" });
+    }
+
+    const page = Math.max(1, Number.parseInt(req.query.page || "1", 10) || 1);
+    const limit = Math.min(200, Math.max(1, Number.parseInt(req.query.limit || "50", 10) || 50));
+    const search = typeof req.query.search === "string" ? req.query.search.trim() : "";
+    const status = typeof req.query.status === "string" ? req.query.status.trim().toLowerCase() : "";
+
+    const query = {};
+    const filters = [];
+
+    if (status && status !== "all") {
+      filters.push({ payment_status: { $regex: `^${escapeRegex(status)}$`, $options: "i" } });
+      filters.push({ status: { $regex: `^${escapeRegex(status)}$`, $options: "i" } });
+    }
+
+    if (search) {
+      const s = escapeRegex(search);
+      filters.push({ client_email: { $regex: s, $options: "i" } });
+      filters.push({ clientEmail: { $regex: s, $options: "i" } });
+      filters.push({ freelancer_email: { $regex: s, $options: "i" } });
+      filters.push({ freelancerEmail: { $regex: s, $options: "i" } });
+    }
+
+    if (filters.length === 1) {
+      Object.assign(query, filters[0]);
+    } else if (filters.length > 1) {
+      query.$or = filters;
+    }
+
+    const total = await coll.countDocuments(query);
+    const totalPages = Math.max(1, Math.ceil(total / limit));
+    const currentPage = Math.min(page, totalPages);
+    const skip = (currentPage - 1) * limit;
+
+    const docs = await coll.find(query).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).toArray();
+
+    const data = (docs || []).map((d) => {
+      return {
+        _id: d._id ? String(d._id) : (d.id ? String(d.id) : ""),
+        client_email: String(d.client_email || d.clientEmail || d.client || d.payer_email || "").toLowerCase(),
+        freelancer_email: String(d.freelancer_email || d.freelancerEmail || d.freelancer || d.payee_email || "").toLowerCase(),
+        amount: Number(d.amount ?? d.value ?? d.payout ?? d.total ?? 0),
+        paid_at: d.paid_at || d.paidAt || d.createdAt || d.created_at || null,
+        payment_status: String(d.payment_status || d.status || d.paymentStatus || "unknown"),
+        raw: d,
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data,
+      pagination: {
+        page: currentPage,
+        limit,
+        total,
+        totalPages,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to load admin transactions:", error && error.stack ? error.stack : error);
+    return res.status(500).json({ success: false, message: "Failed to load transactions", error: error && error.message });
+  }
+});
+
 app.get("/api/admin/users", verifyToken, verifyAdmin, async (req, res) => {
   try {
     await initDatabase();
