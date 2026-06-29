@@ -544,7 +544,10 @@ app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", responseOrigin);
   res.header("Access-Control-Allow-Credentials", "true");
   res.header("Vary", "Origin");
-  res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-User-Id, X-User-Email, X-User-Role");
+  res.header(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-User-Id, X-User-Email, X-User-Role, X-User-Name"
+  );
   res.header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
 
   if (req.method === "OPTIONS") {
